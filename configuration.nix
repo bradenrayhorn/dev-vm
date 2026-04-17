@@ -1,4 +1,5 @@
 {
+  config,
   modulesPath,
   pkgs,
   lib,
@@ -7,6 +8,7 @@
 {
   imports = [
     (modulesPath + "/profiles/qemu-guest.nix")
+    (modulesPath + "/image/repart.nix")
   ];
 
   nix.settings.experimental-features = [
@@ -61,19 +63,41 @@
 
   boot.kernelPackages = pkgs.linuxPackages_latest;
 
-  # A raw EFI disk image should boot as removable media without relying on
-  # firmware NVRAM variables.
-  boot.loader.systemd-boot.enable = false;
-  boot.loader.grub = {
-    enable = true;
-    device = "nodev";
-    efiSupport = true;
-    efiInstallAsRemovable = true;
-  };
-  boot.loader.efi.canTouchEfiVariables = false;
+  # Build a bootable EFI raw disk image without the VM-backed image builder,
+  # which requires KVM on the host runner.
+  boot.loader.grub.enable = false;
 
-  image.modules.raw-efi = {
-    image.baseName = "nixos-vzm";
+  fileSystems."/" = {
+    device = "/dev/disk/by-partlabel/nixos";
+    fsType = "ext4";
+  };
+
+  image.repart = {
+    name = "nixos-vzm";
+    partitions = {
+      "esp" = {
+        contents = {
+          "/EFI/BOOT/BOOTAA64.EFI".source =
+            "${pkgs.systemd}/lib/systemd/boot/efi/systemd-bootaa64.efi";
+          "/EFI/Linux/${config.system.boot.loader.ukiFile}".source =
+            "${config.system.build.uki}/${config.system.boot.loader.ukiFile}";
+        };
+        repartConfig = {
+          Type = "esp";
+          Format = "vfat";
+          SizeMinBytes = "96M";
+        };
+      };
+      "root" = {
+        storePaths = [ config.system.build.toplevel ];
+        repartConfig = {
+          Type = "root";
+          Format = "ext4";
+          Label = "nixos";
+          Minimize = "guess";
+        };
+      };
+    };
   };
 
   virtualisation.diskSize = 12 * 1024;

@@ -26,7 +26,7 @@
       };
 
       packages.${system} = {
-        raw-efi = vm.config.system.build.images.raw-efi;
+        raw-efi = vm.config.system.build.image;
       };
     };
 }
