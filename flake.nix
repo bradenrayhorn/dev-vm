@@ -16,20 +16,28 @@
         modules = [ ./configuration.nix ];
       };
 
+      kernelCommandLine = nixpkgs.lib.concatStringsSep " " (
+        [
+          "console=hvc0"
+          "init=${vm.config.system.build.toplevel}/init"
+        ]
+        ++ vm.config.boot.kernelParams
+      );
+
       guestManifest = pkgs.writeText "manifest.json" (builtins.toJSON {
         schemaVersion = 1;
         architecture = "aarch64";
         kernel = "kernel";
         initrd = "initrd";
         rootMode = "ephemeral";
-        commandLine = "console=hvc0";
+        commandLine = kernelCommandLine;
         requiredDisks = [ "data" ];
       });
 
       guestBundle = pkgs.runCommand "guest-bundle" { } ''
         mkdir -p "$out"
         cp ${vm.config.system.build.kernel}/${vm.config.system.boot.loader.kernelFile} "$out/kernel"
-        cp ${vm.config.system.build.netbootRamdisk} "$out/initrd"
+        cp ${vm.config.system.build.netbootRamdisk}/initrd "$out/initrd"
         cp ${guestManifest} "$out/manifest.json"
       '';
     in
