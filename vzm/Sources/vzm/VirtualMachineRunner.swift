@@ -1,0 +1,216 @@
+import Foundation
+import Dispatch
+@preconcurrency import Virtualization
+
+final class VirtualMachineRunner: NSObject {
+    private let config: VMConfig
+    private let bundle: ValidatedGuestBundle
+    private let machineIdentifier: VZGenericMachineIdentifier
+    private let eventHandler: (String) -> Void
+    private let queue = DispatchQueue(label: "vzm.vm")
+
+    private var virtualMachine: VZVirtualMachine?
+    private var bridge: SSHBridge?
+    private var delegateRef: VMDelegate?
+    private var sigintSource: DispatchSourceSignal?
+    private var sigtermSource: DispatchSourceSignal?
+    private let completionSemaphore = DispatchSemaphore(value: 0)
+    private var exitError: Error?
+
+    init(
+        config: VMConfig,
+        bundle: ValidatedGuestBundle,
+        machineIdentifier: VZGenericMachineIdentifier,
+        eventHandler: @escaping (String) -> Void
+    ) {
+        self.config = config
+        self.bundle = bundle
+        self.machineIdentifier = machineIdentifier
+        self.eventHandler = eventHandler
+    }
+
+    func run() throws {
+        guard VZVirtualMachine.isSupported else {
+            throw CLIError("Virtualization is not supported on this host")
+        }
+
+        let vmConfiguration = try makeConfiguration()
+        let virtualMachine = VZVirtualMachine(configuration: vmConfiguration, queue: queue)
+        self.virtualMachine = virtualMachine
+
+        let delegate = VMDelegate(
+            didStop: { [weak self] error in
+                if let error {
+                    self?.eventHandler("guest stopped with error: \(error.localizedDescription)")
+                    self?.exitError = error
+                } else {
+                    self?.eventHandler("guest stopped")
+                }
+                self?.bridge?.stop()
+                self?.completionSemaphore.signal()
+            }
+        )
+        delegateRef = delegate
+        virtualMachine.delegate = delegate
+
+        eventHandler("name: \(config.name)")
+        eventHandler("bundle: \(config.bundlePath)")
+        eventHandler("root mode: \(config.rootMode.rawValue)")
+        eventHandler("data disk: \(config.dataDiskPath)")
+        eventHandler("ssh port: \(config.hostSSHPort)")
+        eventHandler("starting virtual machine")
+
+        let startSemaphore = DispatchSemaphore(value: 0)
+        queue.async { [weak self] in
+            virtualMachine.start { result in
+                switch result {
+                case .success:
+                    guard let self else {
+                        startSemaphore.signal()
+                        return
+                    }
+                    if let socketDevice = virtualMachine.socketDevices.first as? VZVirtioSocketDevice {
+                        let bridge = SSHBridge(
+                            socketDevice: socketDevice,
+                            hostPort: self.config.hostSSHPort,
+                            eventHandler: self.eventHandler
+                        )
+                        do {
+                            try bridge.start()
+                            self.bridge = bridge
+                            self.eventHandler("ssh bridge listening on 127.0.0.1:\(self.config.hostSSHPort)")
+                        } catch {
+                            self.exitError = error
+                            self.eventHandler("startup failure: \(error.localizedDescription)")
+                            self.forceStop()
+                        }
+                    } else {
+                        self.exitError = CLIError("virtual machine started without a virtio socket device")
+                        self.forceStop()
+                    }
+                case .failure(let error):
+                    self?.exitError = error
+                    self?.eventHandler("startup failure: \(error.localizedDescription)")
+                }
+                startSemaphore.signal()
+            }
+        }
+        startSemaphore.wait()
+
+        if let exitError, virtualMachine.state != .running {
+            throw exitError
+        }
+
+        installSignalHandlers()
+        completionSemaphore.wait()
+
+        if let exitError {
+            throw exitError
+        }
+    }
+
+    func requestShutdown() {
+        queue.async { [weak self] in
+            guard let self, let virtualMachine = self.virtualMachine else {
+                self?.completionSemaphore.signal()
+                return
+            }
+
+            self.eventHandler("termination requested")
+            if virtualMachine.canRequestStop {
+                do {
+                    try virtualMachine.requestStop()
+                    self.eventHandler("requested guest shutdown")
+                } catch {
+                    self.eventHandler("graceful shutdown request failed: \(error.localizedDescription)")
+                }
+            }
+
+            self.queue.asyncAfter(deadline: .now() + Constants.shutdownTimeoutSeconds) { [weak self] in
+                guard let self, let virtualMachine = self.virtualMachine else { return }
+                guard virtualMachine.state != .stopped else { return }
+                self.eventHandler("forced termination")
+                self.forceStop()
+            }
+        }
+    }
+
+    private func forceStop() {
+        guard let virtualMachine else {
+            completionSemaphore.signal()
+            return
+        }
+
+        if virtualMachine.canStop {
+            virtualMachine.stop { [weak self] error in
+                if let error {
+                    self?.exitError = error
+                }
+                self?.completionSemaphore.signal()
+            }
+        } else if virtualMachine.state == .stopped || virtualMachine.state == .error {
+            completionSemaphore.signal()
+        }
+    }
+
+    private func installSignalHandlers() {
+        signal(SIGINT, SIG_IGN)
+        signal(SIGTERM, SIG_IGN)
+
+        let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        intSource.setEventHandler { [weak self] in
+            self?.requestShutdown()
+        }
+        intSource.resume()
+        sigintSource = intSource
+
+        let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        termSource.setEventHandler { [weak self] in
+            self?.requestShutdown()
+        }
+        termSource.resume()
+        sigtermSource = termSource
+    }
+
+    private func makeConfiguration() throws -> VZVirtualMachineConfiguration {
+        let platform = VZGenericPlatformConfiguration()
+        platform.machineIdentifier = machineIdentifier
+
+        let dataDiskAttachment = try VZDiskImageStorageDeviceAttachment(
+            url: URL(fileURLWithPath: config.dataDiskPath),
+            readOnly: false
+        )
+        let bootLoader = VZLinuxBootLoader(kernelURL: bundle.kernelURL)
+        bootLoader.initialRamdiskURL = bundle.initrdURL
+        bootLoader.commandLine = bundle.manifest.commandLine
+
+        let vmConfiguration = VZVirtualMachineConfiguration()
+        vmConfiguration.bootLoader = bootLoader
+        vmConfiguration.platform = platform
+        vmConfiguration.memorySize = Constants.defaultMemoryBytes
+        vmConfiguration.cpuCount = Constants.defaultCPUCount
+        vmConfiguration.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: dataDiskAttachment)]
+        vmConfiguration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+        vmConfiguration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
+
+        try vmConfiguration.validate()
+
+        return vmConfiguration
+    }
+}
+
+final class VMDelegate: NSObject, VZVirtualMachineDelegate {
+    private let didStopHandler: (Error?) -> Void
+
+    init(didStop: @escaping (Error?) -> Void) {
+        didStopHandler = didStop
+    }
+
+    func guestDidStop(_ virtualMachine: VZVirtualMachine) {
+        didStopHandler(nil)
+    }
+
+    func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: Error) {
+        didStopHandler(error)
+    }
+}

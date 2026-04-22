@@ -1,24 +1,37 @@
 {
-  description = "NixOS guest image for vzm";
+  description = "Direct-boot NixOS guest bundle for vzm";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      ...
-    }:
+    { nixpkgs, ... }:
     let
       system = "aarch64-linux";
+      pkgs = import nixpkgs { inherit system; };
 
       vm = nixpkgs.lib.nixosSystem {
         inherit system;
-        specialArgs = { inherit self; };
         modules = [ ./configuration.nix ];
       };
+
+      guestManifest = pkgs.writeText "manifest.json" (builtins.toJSON {
+        schemaVersion = 1;
+        architecture = "aarch64";
+        kernel = "kernel";
+        initrd = "initrd";
+        rootMode = "ephemeral";
+        commandLine = "console=hvc0";
+        requiredDisks = [ "data" ];
+      });
+
+      guestBundle = pkgs.runCommand "guest-bundle" { } ''
+        mkdir -p "$out"
+        ln -s ${vm.config.system.build.kernel}/${vm.config.system.boot.loader.kernelFile} "$out/kernel"
+        ln -s ${vm.config.system.build.netbootRamdisk} "$out/initrd"
+        ln -s ${guestManifest} "$out/manifest.json"
+      '';
     in
     {
       nixosConfigurations = {
@@ -26,7 +39,7 @@
       };
 
       packages.${system} = {
-        raw-efi = vm.config.system.build.images.raw-efi;
+        guest-bundle = guestBundle;
       };
     };
 }

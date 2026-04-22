@@ -7,6 +7,7 @@
 {
   imports = [
     (modulesPath + "/profiles/qemu-guest.nix")
+    (modulesPath + "/installer/netboot/netboot-minimal.nix")
   ];
 
   nix.settings.experimental-features = [
@@ -61,23 +62,6 @@
 
   boot.kernelPackages = pkgs.linuxPackages_latest;
 
-  # A raw EFI disk image should boot as removable media without relying on
-  # firmware NVRAM variables.
-  boot.loader.systemd-boot.enable = false;
-  boot.loader.grub = {
-    enable = true;
-    device = "nodev";
-    efiSupport = true;
-    efiInstallAsRemovable = true;
-  };
-  boot.loader.efi.canTouchEfiVariables = false;
-
-  image.modules.raw-efi = {
-    image.baseName = "nixos-vzm";
-  };
-
-  virtualisation.diskSize = 12 * 1024;
-
   networking.useDHCP = false;
   networking.interfaces = { };
   networking.firewall.enable = true;
@@ -106,13 +90,44 @@
     };
   };
 
+  systemd.services.vzm-data-disk = {
+    description = "Prepare and mount the persistent vzm data disk";
+    wantedBy = [ "multi-user.target" ];
+    wants = [ "systemd-udev-settle.service" ];
+    after = [
+      "systemd-udev-settle.service"
+      "local-fs.target"
+    ];
+    unitConfig.ConditionPathExists = "/dev/vda";
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    script = ''
+      mkdir -p /data
+      if ! ${pkgs.util-linux}/bin/blkid /dev/vda >/dev/null 2>&1; then
+        ${pkgs.e2fsprogs}/bin/mkfs.ext4 -F -L vzm-data /dev/vda
+      fi
+      if ! ${pkgs.util-linux}/bin/mountpoint -q /data; then
+        ${pkgs.util-linux}/bin/mount -t ext4 /dev/vda /data
+      fi
+      chown braden:braden /data
+      chmod 700 /data
+    '';
+  };
+
   environment.systemPackages = with pkgs; [
     vim
   ];
 
   nixpkgs.config.allowUnfree = true;
 
-  environment.variables.EDITOR = "vim";
+  environment.variables = {
+    EDITOR = "vim";
+    VZM_ROOT_MODE = "ephemeral";
+    VZM_DATA_MOUNT = "/data";
+  };
+
   programs.zsh.enable = true;
   users.defaultUserShell = pkgs.zsh;
 

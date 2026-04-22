@@ -1,4 +1,4 @@
-name: Build NixOS ASIF
+name: Build Guest Bundle
 
 on:
   push:
@@ -14,25 +14,13 @@ permissions:
   contents: write
 
 jobs:
-  build-raw:
+  build-bundle:
     runs-on: blacksmith-2vcpu-ubuntu-2404-arm
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
-
-      - name: Configure KVM access
-        run: |
-          if [ ! -e /dev/kvm ]; then
-            echo "/dev/kvm is not available on this runner" >&2
-            exit 1
-          fi
-
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
 
       - name: Install Nix
         run: |
@@ -45,48 +33,30 @@ jobs:
           VERSION=$(date +'%y.%m').${{ github.run_number }}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Build raw disk image
+      - name: Build guest bundle
         run: |
           . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-          nix build .#packages.aarch64-linux.raw-efi --print-build-logs
+          nix build .#packages.aarch64-linux.guest-bundle --print-build-logs
 
-      - name: Prepare raw disk artifact
+      - name: Package guest bundle
         run: |
           mkdir -p release
-          RAW_PATH=$(find "$(readlink -f result)" -type f -name '*.raw' | head -n 1)
-          test -n "$RAW_PATH"
-          cp "$RAW_PATH" release/nixos-${{ steps.version.outputs.version }}-aarch64.raw
+          RESULT_PATH=$(readlink -f result)
+          test -d "$RESULT_PATH"
+          tar -C "$RESULT_PATH" -czf "release/nixos-${{ steps.version.outputs.version }}-aarch64-guest-bundle.tar.gz" .
 
-      - name: Upload raw disk artifact
+      - name: Upload guest bundle artifact
         uses: actions/upload-artifact@v4
         with:
-          name: raw-disk-image
-          path: release/nixos-${{ steps.version.outputs.version }}-aarch64.raw
+          name: guest-bundle
+          path: release/nixos-${{ steps.version.outputs.version }}-aarch64-guest-bundle.tar.gz
           if-no-files-found: error
-          retention-days: 1
-
-  convert-asif:
-    needs: build-raw
-    runs-on: macos-26
-    steps:
-      - name: Download raw disk artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: raw-disk-image
-          path: raw-disk-image
-
-      - name: Convert raw disk image to ASIF
-        run: |
-          mkdir -p release
-          RAW_PATH=$(find raw-disk-image -type f -name '*.raw' | head -n 1)
-          test -n "$RAW_PATH"
-          diskutil image create from --format ASIF "$RAW_PATH" \
-            "release/nixos-${{ needs.build-raw.outputs.version }}-aarch64.asif"
+          retention-days: 7
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v${{ needs.build-raw.outputs.version }}" \
-            --title "v${{ needs.build-raw.outputs.version }}" \
-            "release/nixos-${{ needs.build-raw.outputs.version }}-aarch64.asif"
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --title "v${{ steps.version.outputs.version }}" \
+            "release/nixos-${{ steps.version.outputs.version }}-aarch64-guest-bundle.tar.gz"
