@@ -165,6 +165,13 @@ struct VMStore {
             let error = String(cString: strerror(errno))
             throw CLIError("failed to clone image to '\(destination.path)': \(error)")
         }
+
+        let chmodResult = destination.withUnsafeFileSystemRepresentation { pathFS in
+            chmod(pathFS, mode_t(S_IRUSR | S_IWUSR))
+        }
+        guard chmodResult == 0 else {
+            throw CLIError("failed to make image writable at '\(destination.path)': \(String(cString: strerror(errno)))")
+        }
     }
 
     func saveMachineIdentifier(_ identifier: VZGenericMachineIdentifier, for name: VMName) throws {
