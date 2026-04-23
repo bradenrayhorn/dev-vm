@@ -80,11 +80,6 @@
   networking.firewall.enable = true;
   networking.firewall.allowedTCPPorts = [ 22 ];
 
-  services.getty.autologinUser = "braden";
-  systemd.services."serial-getty@hvc0".serviceConfig.ExecStart = lib.mkForce ''
-    ${pkgs.util-linux}/sbin/agetty --autologin braden --keep-baud 115200,57600,38400,9600 - hvc0 vt220
-  '';
-
   systemd.services.vzm-data-disk = {
     description = "Prepare and mount the persistent vzm data disk";
     wantedBy = [ "multi-user.target" ];
