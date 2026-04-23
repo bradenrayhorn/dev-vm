@@ -8,6 +8,7 @@ final class VirtualMachineRunner: NSObject {
     private let machineIdentifier: VZGenericMachineIdentifier
     private let eventHandler: (String) -> Void
     private let queue = DispatchQueue(label: "vzm.vm")
+    private let signalQueue = DispatchQueue(label: "vzm.signal")
 
     private var virtualMachine: VZVirtualMachine?
     private var bridge: SSHBridge?
@@ -161,14 +162,14 @@ final class VirtualMachineRunner: NSObject {
         signal(SIGINT, SIG_IGN)
         signal(SIGTERM, SIG_IGN)
 
-        let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: signalQueue)
         intSource.setEventHandler { [weak self] in
             self?.requestShutdown()
         }
         intSource.resume()
         sigintSource = intSource
 
-        let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: signalQueue)
         termSource.setEventHandler { [weak self] in
             self?.requestShutdown()
         }
