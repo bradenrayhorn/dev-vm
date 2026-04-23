@@ -80,28 +80,10 @@
   networking.firewall.enable = true;
   networking.firewall.allowedTCPPorts = [ 22 ];
 
-  systemd.sockets.vsock-ssh = {
-    description = "Expose guest SSH over vsock port 2222";
-    wantedBy = [ "sockets.target" ];
-    listenStreams = [ "vsock::2222" ];
-    socketConfig = {
-      Accept = true;
-      NoDelay = true;
-    };
-  };
-
-  systemd.services."vsock-ssh@" = {
-    description = "Proxy vsock SSH connections to localhost:22";
-    requires = [ "sshd.service" ];
-    after = [ "sshd.service" ];
-    serviceConfig = {
-      ExecStart = "${pkgs.systemd}/lib/systemd/systemd-socket-proxyd 127.0.0.1:22";
-      StandardInput = "socket";
-      StandardOutput = "socket";
-      StandardError = "journal";
-      PrivateNetwork = false;
-    };
-  };
+  services.getty.autologinUser = "braden";
+  systemd.services."serial-getty@hvc0".serviceConfig.ExecStart = lib.mkForce ''
+    ${pkgs.util-linux}/sbin/agetty --autologin braden --keep-baud 115200,57600,38400,9600 - hvc0 vt220
+  '';
 
   systemd.services.vzm-data-disk = {
     description = "Prepare and mount the persistent vzm data disk";

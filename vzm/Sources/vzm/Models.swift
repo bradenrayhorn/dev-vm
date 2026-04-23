@@ -4,7 +4,7 @@ import Virtualization
 enum Constants {
     static let configSchemaVersion = 3
     static let bundleSchemaVersion = 1
-    static let guestSSHVsockPort: UInt32 = 2222
+    static let guestSSHVsockPort: UInt32 = 22
     static let defaultMemoryBytes: UInt64 = 4 * 1024 * 1024 * 1024
     static let defaultCPUCount = 2
     static let shutdownTimeoutSeconds: TimeInterval = 30
