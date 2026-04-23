@@ -165,6 +165,15 @@ struct VMStore {
             let error = String(cString: strerror(errno))
             throw CLIError("failed to clone image to '\(destination.path)': \(error)")
         }
+
+        do {
+            try fileManager.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o600))],
+                ofItemAtPath: destination.path
+            )
+        } catch {
+            throw CLIError("failed to make image writable at '\(destination.path)': \(error.localizedDescription)")
+        }
     }
 
     func saveMachineIdentifier(_ identifier: VZGenericMachineIdentifier, for name: VMName) throws {

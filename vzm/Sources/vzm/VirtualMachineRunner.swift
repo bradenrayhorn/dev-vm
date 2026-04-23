@@ -16,8 +16,7 @@ final class VirtualMachineRunner: NSObject {
     private var sigtermSource: DispatchSourceSignal?
     private let completionSemaphore = DispatchSemaphore(value: 0)
     private var exitError: Error?
-    private var consoleInputHandle: FileHandle?
-    private var consoleOutputHandle: FileHandle?
+    private var consoleRelay: ConsoleRelay?
 
     init(
         config: VMConfig,
@@ -48,6 +47,7 @@ final class VirtualMachineRunner: NSObject {
                 } else {
                     self?.eventHandler("guest stopped")
                 }
+                self?.consoleRelay?.stop()
                 self?.bridge?.stop()
                 self?.completionSemaphore.signal()
             }
@@ -80,6 +80,7 @@ final class VirtualMachineRunner: NSObject {
                             eventHandler: self.eventHandler
                         )
                         do {
+                            try self.consoleRelay?.start()
                             try bridge.start()
                             self.bridge = bridge
                             self.eventHandler("ssh bridge listening on 127.0.0.1:\(self.config.hostSSHPort)")
@@ -192,17 +193,10 @@ final class VirtualMachineRunner: NSObject {
         bootLoader.initialRamdiskURL = bundle.initrdURL
         bootLoader.commandLine = bundle.manifest.commandLine
 
-        guard let consoleInputHandle = FileHandle(forReadingAtPath: "/dev/null") else {
-            throw CLIError("failed to open /dev/null for guest console input")
-        }
-        let consoleOutputHandle = FileHandle.standardOutput
-        self.consoleInputHandle = consoleInputHandle
-        self.consoleOutputHandle = consoleOutputHandle
+        let consoleRelay = try ConsoleRelay()
+        self.consoleRelay = consoleRelay
 
-        let consoleAttachment = VZFileHandleSerialPortAttachment(
-            fileHandleForReading: consoleInputHandle,
-            fileHandleForWriting: consoleOutputHandle
-        )
+        let consoleAttachment = consoleRelay.makeAttachment()
         let consolePort = VZVirtioConsoleDeviceSerialPortConfiguration()
         consolePort.attachment = consoleAttachment
 
